@@ -1,67 +1,92 @@
+import sys
 from mpi4py import MPI
 import numpy as np
-import os
+from scipy.sparse import lil_matrix
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from Bio import SeqIO
+import argparse
+import time
 
-def read_fasta(file_path):
-    """Lee una secuencia de un archivo FASTA."""
-    with open(file_path, 'r') as file:
-        # Ignora la primera línea (descripción) y lee la secuencia
-        return ''.join(line.strip() for line in file if not line.startswith('>'))
+def merge_sequences_from_fasta(file_path):
+    sequences = []  # List to store all sequences
+    for record in SeqIO.parse(file_path, "fasta"):
+        # record.seq gives the sequence
+        sequences.append(str(record.seq))
+    return "".join(sequences)
 
-def generate_and_write_dotplot(seq1, seq2, start, end, output):
-    """Genera y escribe un dotplot parcial para una porción de la secuencia."""
-    with open(output, 'a') as f:
-        for i in range(start, end):
-            for j in range(len(seq2)):
-                if seq1[i] == seq2[j]:
-                    f.write(f"{i}\t{j}\n")
+def crear_dotplot_parcial(secuencia1, secuencia2, start, end):
+    codigos_secuencia1 = np.frombuffer(secuencia1.encode(), dtype=np.uint8)
+    codigos_secuencia2 = np.frombuffer(secuencia2.encode(), dtype=np.uint8)
 
-def main(file1, file2, output):
+    dotplot_parcial = lil_matrix((end - start, len(secuencia2)), dtype=np.uint8)
+    for i in range(start, end):
+        matches = codigos_secuencia1[i] == codigos_secuencia2
+        dotplot_parcial[i - start, matches] = 1
+    return dotplot_parcial
+
+def main(file1, file2, limite, output):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
-    
-    # Leer los archivos FASTA en el proceso root
+
     if rank == 0:
-        seq1 = read_fasta(file1)
-        seq2 = read_fasta(file2)
-        print(f"Proceso {rank}: secuencia 1 leída ({len(seq1)} bases)")
-        print(f"Proceso {rank}: secuencia 2 leída ({len(seq2)} bases)")
+        secuencia1 = merge_sequences_from_fasta(file1)[:limite]
+        secuencia2 = merge_sequences_from_fasta(file2)[:limite]
+        print(f"Proceso {rank}: secuencia 1 leída ({len(secuencia1)} bases)")
+        print(f"Proceso {rank}: secuencia 2 leída ({len(secuencia2)} bases)")
         # Crear o vaciar el archivo de salida
         open(output, 'w').close()
+        begin = time.time()
     else:
-        seq1 = None
-        seq2 = None
+        secuencia1 = None
+        secuencia2 = None
+        begin = None
 
-    # Broadcast de las secuencias a todos los procesos
-    seq1 = comm.bcast(seq1, root=0)
-    seq2 = comm.bcast(seq2, root=0)
-    
-    # Dividir el trabajo entre los procesos
-    part_size = len(seq1) // size
+    secuencia1 = comm.bcast(secuencia1, root=0)
+    secuencia2 = comm.bcast(secuencia2, root=0)
+    begin = comm.bcast(begin, root=0)
+
+    part_size = len(secuencia1) // size
     start = rank * part_size
-    end = (rank + 1) * part_size if rank != size - 1 else len(seq1)
+    end = (rank + 1) * part_size if rank != size - 1 else len(secuencia1)
+
+    dotplot_parcial = crear_dotplot_parcial(secuencia1, secuencia2, start, end)
     
-    # Cada proceso genera y escribe una parte del dotplot
-    generate_and_write_dotplot(seq1, seq2, start, end, output)
+    dotplot = None
+    if rank == 0:
+        dotplot = lil_matrix((len(secuencia1), len(secuencia2)), dtype=np.uint8)
     
-    # Sincronizar los procesos
-    comm.Barrier()
+    dotplot_parcial = dotplot_parcial.tocsr()
+    dotplot_parcial = comm.gather(dotplot_parcial, root=0)
     
     if rank == 0:
-        print(f"Proceso {rank}: dotplot generado y guardado en {output}")
+        for i, dp in enumerate(dotplot_parcial):
+            dotplot[i * part_size: (i + 1) * part_size] = dp
+        
+        preview_size = 1000
+        dotplot_preview = dotplot[:preview_size, :preview_size].toarray()
+
+        plt.imshow(dotplot_preview, cmap='gray')
+        plt.title('Dotplot (Vista previa)')
+        plt.xlabel('Secuencia 2')
+        plt.ylabel('Secuencia 1')
+        plt.savefig(output)
+        
+        print(f"\n El código se ejecutó en: {time.time() - begin} segundos")
+        print("la matriz resultado tiene un tamaño de " + str(sys.getsizeof(dotplot)) + " bytes")
 
 if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser(description='Aplicación para generar dotplots usando mpi4py')
-    parser.add_argument('--file1', type=str, required=True, help='Archivo FASTA de la primera secuencia')
-    parser.add_argument('--file2', type=str, required=True, help='Archivo FASTA de la segunda secuencia')
-    parser.add_argument('--output', type=str, required=True, help='Archivo de salida para el dotplot')
+    parser = argparse.ArgumentParser(description='Mi Aplicación MPI')
+    parser.add_argument('--file1', type=str, help='Ruta del archivo 1')
+    parser.add_argument('--file2', type=str, help='Ruta del archivo 2')
+    parser.add_argument('--limite', type=int, help='Umbral')
+    parser.add_argument('--output', type=str, help='Archivo de salida')
     args = parser.parse_args()
-    
-    # Construir rutas completas a los archivos FASTA
-    file1_path = os.path.join('data', args.file1)
-    file2_path = os.path.join('data', args.file2)
-    output_path = os.path.join('data', args.output)
-    
-    main(file1_path, file2_path, output_path)
+
+    file1 = args.file1
+    file2 = args.file2
+    limite = args.limite
+    output = args.output
+
+    main(file1, file2, limite, output)
