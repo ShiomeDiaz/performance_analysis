@@ -35,8 +35,6 @@ def main(file1, file2, limite, output):
         secuencia2 = merge_sequences_from_fasta(file2)[:limite]
         print(f"Proceso {rank}: secuencia 1 leída ({len(secuencia1)} bases)")
         print(f"Proceso {rank}: secuencia 2 leída ({len(secuencia2)} bases)")
-        # Crear o vaciar el archivo de salida
-        open(output, 'w').close()
         begin = time.time()
     else:
         secuencia1 = None
