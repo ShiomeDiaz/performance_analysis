@@ -35,6 +35,8 @@ def main(file1, file2, limite, output):
         secuencia2 = merge_sequences_from_fasta(file2)[:limite]
         print(f"Proceso {rank}: secuencia 1 leída ({len(secuencia1)} bases)")
         print(f"Proceso {rank}: secuencia 2 leída ({len(secuencia2)} bases)")
+        print(f"Total de bases usadas de secuencia 1: {len(secuencia1)}")
+        print(f"Total de bases usadas de secuencia 2: {len(secuencia2)}")
         begin = time.time()
     else:
         secuencia1 = None
@@ -62,7 +64,7 @@ def main(file1, file2, limite, output):
         for i, dp in enumerate(dotplot_parcial):
             dotplot[i * part_size: (i + 1) * part_size] = dp
         
-        preview_size = 1000
+        preview_size = 100000
         dotplot_preview = dotplot[:preview_size, :preview_size].toarray()
 
         plt.imshow(dotplot_preview, cmap='gray')
