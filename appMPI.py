@@ -1,92 +1,119 @@
+import time
 import sys
-from mpi4py import MPI
 import numpy as np
-from scipy.sparse import lil_matrix
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 from Bio import SeqIO
+from mpi4py import MPI
 import argparse
-import time
 
 def merge_sequences_from_fasta(file_path):
-    sequences = []  # List to store all sequences
+    sequences = []
     for record in SeqIO.parse(file_path, "fasta"):
-        # record.seq gives the sequence
         sequences.append(str(record.seq))
     return "".join(sequences)
 
-def crear_dotplot_parcial(secuencia1, secuencia2, start, end):
+def crear_dotplot(args):
+    secuencia1, secuencia2, indice = args
     codigos_secuencia1 = np.frombuffer(secuencia1.encode(), dtype=np.uint8)
     codigos_secuencia2 = np.frombuffer(secuencia2.encode(), dtype=np.uint8)
 
-    dotplot_parcial = lil_matrix((end - start, len(secuencia2)), dtype=np.uint8)
-    for i in range(start, end):
+    dotplot = np.zeros((len(secuencia1), len(secuencia2)), dtype=np.uint8)
+    for i in range(len(secuencia1)):
         matches = codigos_secuencia1[i] == codigos_secuencia2
-        dotplot_parcial[i - start, matches] = 1
-    return dotplot_parcial
+        dotplot[i, matches] = 1
+    return (indice, dotplot)
 
-def main(file1, file2, limite, output):
+def dividir_secuencia(secuencia, chunk_size):
+    subsecuencias = []
+    start = 0
+    while start < len(secuencia):
+        end = min(start + chunk_size, len(secuencia))
+        subsecuencia = secuencia[start:end]
+        subsecuencias.append(subsecuencia)
+        start = end
+    return subsecuencias
+
+def calcular_peso_matriz(matriz):
+    bytes_matriz = sys.getsizeof(matriz)
+    megabytes_matriz = bytes_matriz / (1024 ** 2)
+    return megabytes_matriz
+
+def procesar_comparacion(secuencia1, secuencia2, chunk_size):
+    inicio_parcial = time.time()
     comm = MPI.COMM_WORLD
+    num_procesos = comm.Get_size()
     rank = comm.Get_rank()
-    size = comm.Get_size()
 
     if rank == 0:
-        secuencia1 = merge_sequences_from_fasta(file1)[:limite]
-        secuencia2 = merge_sequences_from_fasta(file2)[:limite]
-        print(f"Proceso {rank}: secuencia 1 leída ({len(secuencia1)} bases)")
-        print(f"Proceso {rank}: secuencia 2 leída ({len(secuencia2)} bases)")
-        print(f"Total de bases usadas de secuencia 1: {len(secuencia1)}")
-        print(f"Total de bases usadas de secuencia 2: {len(secuencia2)}")
-        begin = time.time()
+        subsecuencias1 = dividir_secuencia(secuencia1, chunk_size)
     else:
-        secuencia1 = None
-        secuencia2 = None
-        begin = None
+        subsecuencias1 = None
 
-    secuencia1 = comm.bcast(secuencia1, root=0)
-    secuencia2 = comm.bcast(secuencia2, root=0)
-    begin = comm.bcast(begin, root=0)
+    subsecuencias1 = comm.bcast(subsecuencias1, root=0)
+    subsecuencia1 = subsecuencias1[rank]
+    resultado_parcial = crear_dotplot((subsecuencia1, secuencia2, rank))
+    resultados = comm.gather(resultado_parcial, root=0)
 
-    part_size = len(secuencia1) // size
-    start = rank * part_size
-    end = (rank + 1) * part_size if rank != size - 1 else len(secuencia1)
-
-    dotplot_parcial = crear_dotplot_parcial(secuencia1, secuencia2, start, end)
-    
-    dotplot = None
     if rank == 0:
-        dotplot = lil_matrix((len(secuencia1), len(secuencia2)), dtype=np.uint8)
-    
-    dotplot_parcial = dotplot_parcial.tocsr()
-    dotplot_parcial = comm.gather(dotplot_parcial, root=0)
-    
-    if rank == 0:
-        for i, dp in enumerate(dotplot_parcial):
-            dotplot[i * part_size: (i + 1) * part_size] = dp
-        
-        preview_size = 100000
-        dotplot_preview = dotplot[:preview_size, :preview_size].toarray()
+        dotplot = np.zeros((len(secuencia1), len(secuencia2)), dtype=np.uint8)
+        for resultado in resultados:
+            indice, resultado_parcial = resultado
+            inicio = indice * chunk_size
+            fin = min(inicio + chunk_size, len(secuencia1))
+            dotplot[inicio:fin] = resultado_parcial
+        fin_tiempo_parcial = time.time()
+        print("Tiempo parcial: ", fin_tiempo_parcial - inicio_parcial)
+        return dotplot
+    else:
+        return None
 
-        plt.imshow(dotplot_preview, cmap='gray')
-        plt.title('Dotplot (Vista previa)')
-        plt.xlabel('Secuencia 2')
-        plt.ylabel('Secuencia 1')
-        plt.savefig(output)
-        
-        print(f"\n El código se ejecutó en: {time.time() - begin} segundos")
-        print("la matriz resultado tiene un tamaño de " + str(sys.getsizeof(dotplot)) + " bytes")
+def draw_dotplot(matrix, fig_name='dotplot.svg'):
+    plt.figure(figsize=(5, 5))
+    plt.imshow(matrix, cmap='gray', aspect='auto')
+    plt.ylabel("Secuencia 1")
+    plt.xlabel("Secuencia 2")
+    plt.savefig(fig_name)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Mi Aplicación MPI')
     parser.add_argument('--file1', type=str, help='Ruta del archivo 1')
     parser.add_argument('--file2', type=str, help='Ruta del archivo 2')
-    parser.add_argument('--limite', type=int, help='Umbral')
-    parser.add_argument('--output', type=str, help='Archivo de salida')
+    parser.add_argument('--limite', type=int, help='Numero de procesos')
+    
     args = parser.parse_args()
 
     file1 = args.file1
     file2 = args.file2
     limite = args.limite
-    output = args.output
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
 
-    main(file1, file2, limite, output)
+    secuencia1 = merge_sequences_from_fasta(file1)
+    secuencia2 = merge_sequences_from_fasta(file2)
+    seccion_matriz = limite
+    chunk_size = 1000
+
+    if rank == 0:
+        num_procesos = comm.Get_size()
+        inicio_tiempo = time.time()
+        dotplot = procesar_comparacion(secuencia1[:seccion_matriz], secuencia2[:seccion_matriz], chunk_size)
+        preview_size = 30000
+        dotplot_preview = dotplot[:preview_size, :preview_size]
+        plt.imshow(dotplot_preview, cmap='gray')
+        plt.title('Dotplot')
+        plt.xlabel('Secuencia 2')
+        plt.ylabel('Secuencia 1')
+        plt.savefig('img/MPI')
+        draw_dotplot(dotplot_preview, 'img/MPI.svg')
+        draw_dotplot(dotplot_preview[:500, :500], 'img/MPI_aumentada.svg')
+
+        fin_tiempo = time.time()
+        tiempo_ejecucion = fin_tiempo - inicio_tiempo
+
+        print("El código se ejecutó en:", tiempo_ejecucion, "segundos")
+        print("El tamaño de la matriz es:", dotplot.shape)
+        print("La matriz resultado tiene un tamaño de " + str(calcular_peso_matriz(dotplot)) + " Mb")
+    else:
+        procesar_comparacion(secuencia1[:seccion_matriz], secuencia2[:seccion_matriz], chunk_size)
+
+#mpirun -n 4 python appMPI.py --file1=data/Salmonella.fna --file2=data/Salmonella.fna --limite=110000

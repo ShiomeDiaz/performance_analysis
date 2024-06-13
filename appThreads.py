@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from Bio import SeqIO
 import argparse
 import time
+import threading
 
 def encode_sequence(sequence):
     base_to_bits = {'A': 0b00, 'C': 0b01, 'G': 0b10, 'T': 0b11}
@@ -25,14 +26,14 @@ def decode_sequence(encoded_sequence, length):
         decoded_sequence[i] = bits
     return decoded_sequence
 
-def merge_sequences_from_fasta(file_path, limite):
+def merge_sequences_from_fasta(file_path, limite, result, index):
     sequences = []
     for record in SeqIO.parse(file_path, "fasta"):
         sequences.append(str(record.seq))
         if len("".join(sequences)) >= limite:
             break
     merged_sequence = "".join(sequences)[:limite]
-    return encode_sequence(merged_sequence), len(merged_sequence)
+    result[index] = (encode_sequence(merged_sequence), len(merged_sequence))
 
 def crear_dotplot(secuencia1, secuencia2, len_secuencia1, len_secuencia2):
     secuencia1_decoded = decode_sequence(secuencia1, len_secuencia1)
@@ -47,10 +48,26 @@ def crear_dotplot(secuencia1, secuencia2, len_secuencia1, len_secuencia2):
 def main(file1, file2, limite, output):
     start_time = time.time()
 
-    # Lectura y codificación de secuencias
+    # Lectura y codificación de secuencias en paralelo
     read_start = time.time()
-    secuencia1, len_secuencia1 = merge_sequences_from_fasta(file1, limite)
-    secuencia2, len_secuencia2 = merge_sequences_from_fasta(file2, limite)
+    result = [None, None]
+    threads = []
+    
+    t1 = threading.Thread(target=merge_sequences_from_fasta, args=(file1, limite, result, 0))
+    t2 = threading.Thread(target=merge_sequences_from_fasta, args=(file2, limite, result, 1))
+    
+    threads.append(t1)
+    threads.append(t2)
+    
+    t1.start()
+    t2.start()
+    
+    for t in threads:
+        t.join()
+    
+    secuencia1, len_secuencia1 = result[0]
+    secuencia2, len_secuencia2 = result[1]
+    
     read_end = time.time()
     print(f"Tiempo de lectura y codificación de secuencias: {read_end - read_start} segundos")
     
@@ -97,5 +114,4 @@ if __name__ == '__main__':
     output = args.output
 
     main(file1, file2, limite, output)
-#╰─ python appSecuencial.py --file1=data/Salmonella.fna --file2=data/E_coli.fna --limite=30000 --output=img/Secuencial30k_1k.png 
-
+#python appThreads.py --file1=data/Salmonella.fna --file2=data/E_coli.fna --limite=30000 --output=img/threads30k_1k.png
